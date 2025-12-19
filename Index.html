@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Folha de Ponto - Art. 71 | Produção</title>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+<style>
+:root{
+  --bg:#0f172a;--card:#020617;--text:#e5e7eb;
+  --accent:#38bdf8;--border:#1e293b;--ok:#22c55e
+}
+body{margin:0;font-family:Segoe UI;background:var(--bg);color:var(--text)}
+.container{max-width:1500px;margin:auto;padding:30px}
+h1{text-align:center;color:var(--accent)}
+.card{background:var(--card);padding:20px;border-radius:10px;border:1px solid var(--border)}
+.actions{display:flex;gap:10px;margin-bottom:15px}
+input,button{padding:12px;border-radius:6px;border:1px solid var(--border);background:#020617;color:var(--text)}
+button{background:var(--accent);color:#000;font-weight:bold;cursor:pointer}
+table{width:100%;border-collapse:collapse;margin-top:15px}
+th,td{padding:8px;border-bottom:1px solid var(--border);text-align:center;font-size:13px}
+th{color:var(--accent)}
+tfoot td{font-weight:bold;color:var(--ok)}
+.status-ok{color:var(--ok);font-weight:bold}
+</style>
+</head>
+
+<body>
+<div class="container">
+<h1>📄 Folha de Ponto — Art. 71</h1>
+
+<div class="card">
+<div class="actions">
+  <input type="file" id="pdfInput" accept="application/pdf">
+  <button onclick="exportExcel()">📊 Exportar Excel</button>
+</div>
+
+<table>
+<thead>
+<tr>
+  <th>Data</th><th>HN</th><th>HE</th><th>Total Folha</th>
+  <th>Art71 D</th><th>Art71 N</th>
+  <th>Status</th>
+  <th>AT</th><th>FA</th><th>ADN</th><th>HA</th>
+  <th>BHC</th><th>BHD</th><th>HNR</th>
+</tr>
+</thead>
+<tbody id="resultBody"></tbody>
+<tfoot>
+<tr>
+  <td colspan="4">TOTAL</td>
+  <td id="totD">00:00</td>
+  <td id="totN">00:00</td>
+  <td colspan="8"></td>
+</tr>
+</tfoot>
+</table>
+</div>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+let excelData = [];
+let totalArtDMin = 0;
+let totalArtNMin = 0;
+
+/* ===== UTILS ===== */
+const toMin = t =>
+  (!t || t==='-' || !t.includes(':')) ? 0 :
+  (+t.split(':')[0])*60 + (+t.split(':')[1]);
+
+const toHH = m =>
+  String(Math.floor(m/60)).padStart(2,'0') + ':' +
+  String(m%60).padStart(2,'0');
+
+const art71 = m => m >= 420 ? 60 : 15;
+const night = r => /22:|23:|00:|01:|02:|03:|04:|05:/.test(r);
+
+const parseDateBR = d => {
+  const [dd,mm,yy] = d.split('/').map(Number);
+  return new Date(yy,mm-1,dd);
+};
+
+/* ===== EXTRAÇÃO REAL DO PDF ===== */
+async function extractLines(file){
+  const pdf = await pdfjsLib.getDocument(URL.createObjectURL(file)).promise;
+  const lines = [];
+
+  for(let p=1;p<=pdf.numPages;p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const map = {};
+
+    content.items.forEach(i=>{
+      const y = Math.round(i.transform[5]);
+      map[y] = map[y] || [];
+      map[y].push(i.str);
+    });
+
+    Object.values(map).forEach(l=>{
+      const line = l.join(' ').replace(/\s+/g,' ').trim();
+      if(/^\d{2}\/\d{2}\/\d{4}/.test(line)) lines.push(line);
+    });
+  }
+  return lines;
+}
+
+/* ===== PARSER ===== */
+function parse(lines){
+  const rows = [];
+
+  lines.forEach(line=>{
+    const d = line.match(/^(\d{2}\/\d{2}\/\d{4})/)?.[1];
+    if(!d) return;
+
+    const cols = line.match(/(\d{2}:\d{2}|\-)/g);
+    if(!cols || cols.length < 9) return;
+
+    const reg = line.match(/\d{2}:\d{2}\s*-\s*\d{2}:\d{2}/)?.[0] || '';
+    const [HN,HE,AT,FA,ADN,HA,BHC,BHD,HNR] = cols.slice(0,9);
+
+    if(HN==='-' && HE==='-') return; // ignora folga
+
+    rows.push({d,reg,HN,HE,AT,FA,ADN,HA,BHC,BHD,HNR});
+  });
+
+  return rows.sort((a,b)=>parseDateBR(a.d)-parseDateBR(b.d));
+}
+
+/* ===== EVENTO PRINCIPAL ===== */
+document.getElementById('pdfInput').addEventListener('change', async e=>{
+  excelData = [];
+  totalArtDMin = 0;
+  totalArtNMin = 0;
+  resultBody.innerHTML = '';
+  totD.textContent = '00:00';
+  totN.textContent = '00:00';
+
+  const rows = parse(await extractLines(e.target.files[0]));
+  if(!rows.length) return alert('Nenhum registro válido encontrado no PDF.');
+
+  rows.forEach(r=>{
+    const total = toMin(r.HN) + toMin(r.HE);
+    const art = art71(total);
+    const isN = night(r.reg);
+
+    isN ? totalArtNMin += art : totalArtDMin += art;
+
+    resultBody.insertAdjacentHTML('beforeend',`
+      <tr>
+        <td>${r.d}</td>
+        <td>${r.HN}</td>
+        <td>${r.HE}</td>
+        <td>${toHH(total)}</td>
+        <td>${!isN ? toHH(art) : '00:00'}</td>
+        <td>${isN ? toHH(art) : '00:00'}</td>
+        <td class="status-ok">OK</td>
+        <td>${r.AT}</td><td>${r.FA}</td><td>${r.ADN}</td>
+        <td>${r.HA}</td><td>${r.BHC}</td><td>${r.BHD}</td><td>${r.HNR}</td>
+      </tr>
+    `);
+
+    excelData.push({
+      Data:r.d,HN:r.HN,HE:r.HE,Total:toHH(total),
+      Art71D:!isN?toHH(art):'00:00',
+      Art71N:isN?toHH(art):'00:00',
+      Status:'OK',
+      AT:r.AT,FA:r.FA,ADN:r.ADN,HA:r.HA,
+      BHC:r.BHC,BHD:r.BHD,HNR:r.HNR
+    });
+  });
+
+  totD.textContent = toHH(totalArtDMin);
+  totN.textContent = toHH(totalArtNMin);
+});
+
+/* ===== EXCEL ===== */
+function exportExcel(){
+  excelData.push({
+    Data:'TOTAL',
+    Art71D:toHH(totalArtDMin),
+    Art71N:toHH(totalArtNMin)
+  });
+  const ws = XLSX.utils.json_to_sheet(excelData);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Art71');
+  XLSX.writeFile(wb,'Relatorio_Art71.xlsx');
+}
+</script>
+</body>
+</html>
